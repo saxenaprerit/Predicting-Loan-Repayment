@@ -1,0 +1,440 @@
+---
+title: "Predicting Loan Repayment"
+author: "Prerit Saxena"
+date: "February 16, 2020"
+output: html_document
+---
+
+## Importing libraries
+
+The objective of this exercise is to predict where a loan will be fully paid or charged off
+
+```{r, message = FALSE, warning = FALSE}
+rm(list = ls(all=TRUE))
+
+# Importing libraries
+
+library(tidyverse)
+library(dplyr)
+library(DMwR)
+library(ggplot2)
+library(mice)
+library(corrplot)
+library(wordcloud)
+library(caret)
+library(caTools)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(verification)
+library(knitr)
+```
+
+## Pre-import cleaning done
+
+From the dataset we can see, there are a few rows for which the loan is ongoing. It is reporesented by a different loan status and "Does not meet the credit policy" and a non-blank next payment date. We will filter out those loans after pre-processing and will use it for additional analysis later.
+
+```{r, message = FALSE, warning = FALSE}
+# Importing dataset
+
+setwd("C:/Users/Prerit/Desktop/UCinn MSBA Course/Career Services/BMO Harris/BMO_MLCoE_CaseStudy")
+
+getwd()
+
+df_orig <- read.csv("BMO_MLCoE_CaseStudy_Dataset_2.csv")
+```
+
+## Looking at the data
+
+Lets have a look at the structure of our data
+
+```{r, message = TRUE, warning = FALSE}
+# Structure of the dataset
+
+str(df_orig)
+
+# Total number of rows
+
+nrow(df_orig)
+```
+
+# DATA PRE-PROCESSING
+
+## Dropping blank columns
+
+```{r, message = FALSE, warning = FALSE, results = 'hide'}
+# counting number of NAs for every column
+
+sapply(df_orig, function(x) sum(is.na(x)))
+
+# Removing columns which are completely blank
+
+df1 <- df_orig[colSums(!is.na(df_orig)) > 0]
+
+sapply(df1, function(x) sum(is.na(x)))
+
+ncol(df_orig)
+ncol(df1)
+
+
+# Hence, we have reduced number of factors to 63
+
+# We would also need to remove columns with high number of NAs
+
+df2<- df1[colSums(is.na(df1))<1000]
+str(df2)
+
+# Checking for NAs and Class Imbalance in the target variable
+
+
+```
+
+## Checking for levels in loan status
+
+```{r, message = TRUE, warning = FALSE}
+
+ncol(df2)
+
+# Checking for NAs and Class Imbalance in the target variable
+
+# Unique values
+
+unique(df2[,'loan_status'])
+
+# Level counts
+
+table(df2[,'loan_status'])
+
+# Checking summary for entire dataset
+
+summary(df2)
+
+```
+
+## Further treating columns having blank values and percentage columns
+
+```{r, message = FALSE, warning = FALSE, results='hide'}
+
+# Strangely, few columns have a lot of blank values
+
+sapply(df2, function(x) sum(x == ""))
+
+table(sapply(df2, function(x) sum(x == ""))>1000)
+
+# There are  7 such columns. Removing them
+
+df3 <- subset(df2, select = -c(emp_title, desc, next_pymnt_d, debt_settlement_flag_date, settlement_status,settlement_date))
+
+str(df3)
+
+# Trreating column interest rate as it might be an important factor for prediction
+
+to_num <- function(x){
+  a1 <- as.character(x)
+  anv <- substr(a1, 1, nchar(a1)-1)
+  a2 <- as.numeric(anv)
+  return(a2)
+}
+
+df3$int_rate <- to_num(df3$int_rate)
+df3$revol_util <- to_num(df3$revol_util)
+
+
+```
+
+## Imputing values for missing values
+
+```{r, message = FALSE, warning = FALSE}
+
+# Imputation for missing values
+
+# since my computer is unable to run Knn imputation due to memory issues, doing central imputation here
+
+df3_imp <- centralImputation(df3)
+summary(df3_imp)
+
+
+```
+
+## Temporarily writing out dataset and keeping only "Fully Paid" and "Charged values"
+
+```{r, message = FALSE, warning = FALSE}
+
+# writing out the new dataset for QC
+
+write.csv(df3_imp, 'intermediate_1.csv', row.names = FALSE)
+
+
+# Separating out the dataset into current and "probably ongoing" loans
+
+table(df3_imp$loan_status)
+df_c <- df3_imp[df3_imp$loan_status == "Fully Paid" | df3_imp$loan_status == "Charged Off",]
+
+str(df_c)
+
+table(df_c$loan_status)
+
+
+```
+
+# DESCRIPTIVE ANALYTICS
+
+Here, I have looked at the data descriptively. From the graphs, we can see correlations and the imbalance in classes
+
+
+```{r, message = FALSE, warning = FALSE}
+
+
+# DESCRIPTIVE ANALYTICS
+
+# Class balance for output variable
+
+ggplot(data = df_c, aes(x = loan_status)) + geom_bar(color = "black", fill = "blue")
+
+# We can see that the target variable is highly unbalanced
+
+# Exploring correlations
+
+corrplot(cor(df_c[,c('loan_amnt', 'int_rate', 'installment', 'annual_inc', 'dti', 'revol_bal', 'revol_util', 'total_acc', 'total_pymnt')]))
+
+# loan amount and installment have high correlation as expected
+# interest rate and revolving utilization have high correlation
+# dti and annual inc are inversely correlated
+
+# Histogram of loan amount
+
+ggplot(data = df_c, aes(x = loan_amnt)) +
+  geom_histogram(bins =20, colour="black", fill="#DD8888") +
+  ylab("Count of loan amount") +
+  ggtitle("Histogram plot of Loan Amount")
+
+# There are a lot of small loans
+
+# Plot of terms
+
+ggplot(data = df_c, aes(x = term)) + geom_bar(color = "black", fill = "green")
+
+# Lot of short term loans as compared to long term loans
+
+# Plot of employment length
+
+ggplot(data=df_c, aes(x=emp_length)) + 
+  geom_bar(colour="black", fill="#DD8888") +
+  xlab("Employment length") +
+  ylab("Count") +
+  ggtitle("Plot of employment length")
+
+# Lot of people with 10+ years seeking loans
+
+# Wordcloud of loan purpose
+
+cd <- count(df_c,purpose)
+cd
+
+wordcloud(words = cd$purpose, freq = cd$n, min.freq = 1, colors = brewer.pal(8,"Dark2"))
+
+# Lot of people taking loans for credit card payment or others or home imporovement
+
+
+```
+
+
+# MODEL BUILDING
+
+First step is to prepare data for modelling. That includes dropping unused levels, dropping columns directly related to loan amounts and not expected to be good predictors and removing date columns
+
+```{r, message = FALSE, warning = FALSE}
+
+# Imputation for missing values
+
+# since my computer is unable to run Knn imputation due to memory issues, doing central imputation here
+
+df3_imp <- centralImputation(df3)
+summary(df3_imp)
+
+
+```
+
+## Temporarily writing out dataset and keeping onlt "Fully Paid" and "Charged Off" loans
+
+```{r, message = FALSE, warning = FALSE}
+
+# Preparing data for modelling
+
+# Dropping unused levels
+
+df_m <- droplevels(df_c)
+
+level <- sapply(df_m[,sapply(df_m, is.factor)], nlevels)
+level
+
+# Also from the dataset we can see that recoveries and recovery fee can be directly linkedin to charge offs (as mentioned in data dictionary, so we need to eliminate those columns)
+
+# Also removing date columns
+
+# Title and zipcode have too many factors so removing them as well
+
+# Loan amount and funded amount are almost the same, so we would need only one of them
+
+# Droppingn last payment because it is also related to the loan numerically
+
+cor(df_m$loan_amnt, df_m$funded_amnt)
+
+cor(df_m$loan_amnt, df_m$installment)
+# High correlation
+
+df_m2 <-subset(df_m, select = -c(funded_amnt, funded_amnt_inv, installment, pymnt_plan, initial_list_status, application_type, hardship_flag, recoveries, collection_recovery_fee, issue_d, earliest_cr_line, last_pymnt_d, last_credit_pull_d, title, zip_code, total_pymnt, total_pymnt_inv, total_rec_prncp, total_rec_int, last_pymnt_amnt))
+
+str(df_m2)
+
+# writing pre model-file
+
+write.csv(df_m2, 'pre_model.csv')
+
+
+
+```
+
+## Splitting data into training and testing
+
+```{r, message = FALSE, warning = FALSE}
+# Splitting data into training and testing
+
+set.seed(100)
+spl = sample.split(df_m2, 0.6)
+train <- subset(df_m2, spl == TRUE)
+test<- subset(df_m2, spl == FALSE)
+
+dim(train)
+dim(test)
+
+# Baseline accuracy
+
+tab <- table(train$loan_status)
+baseline <- tab[2]/(tab[1]+tab[2])
+baseline
+
+# Over 80% due to imbalance
+
+
+```
+
+## Smoting
+
+The output variable is highly unbalanced and hence, smoting is a good idea
+
+```{r, message = FALSE, warning = FALSE}
+# SMOTING to balance the training dataset
+
+train2 <- SMOTE(loan_status~., train, perc.over = 500, perc.under = 125)
+table(train2$loan_status)
+
+
+```
+
+## Model Building
+
+I will start with a baseline of Logistic regression and will go to desicion trees and random forest
+
+### Logistic Regression
+
+```{r, message = FALSE, warning = FALSE}
+# Base model - Logistic regression
+
+model_log <- glm(loan_status~., family = binomial, train2)
+summary(model_log)
+
+# Based on above model
+
+model_log2 <- glm(loan_status~total_rec_late_fee+revol_util+pub_rec+inq_last_6mths+purpose+annual_inc+emp_length+term+int_rate , family = binomial, train2)
+summary(model_log2)
+
+# Predictions on the basis of logistic regression
+
+# In sample
+
+pred_in = predict(model_log2, type = "response")
+
+roc_curve_log_train <- roc.plot(x=(train2$loan_status == "Fully Paid"), pred =pred_in, main = "ROC Curve - train")
+roc_curve_log_train$roc.vol
+
+# Out of sample prediction
+
+pred_out <- predict(model_log2, newdata = test, type = "response")
+pred_val <- ifelse(pred_out>0.5, 1,0)
+table(pred_val)
+
+test_level <- ifelse(test$loan_status=="Fully Paid",1,0)
+
+confusionMatrix(pred_val, test_level, positive = "1")
+
+tab <- table(pred_val, test_level)
+
+FPR <- tab[2,1]/(tab[2,1]+tab[1,1])
+FPR
+
+
+
+```
+
+
+### Decision Trees
+
+
+```{r, message = FALSE, warning = FALSE}
+# Decision Trees
+
+model_cart <- rpart(loan_status~.,data = train2, method = "class")
+summary(model_cart)
+
+prp(model_cart)
+
+# we would need to prune the model
+
+plotcp(model_cart)
+
+model_cart2 <- prune(model_cart, cp = 0.012)
+prp(model_cart2)
+
+# In sample prediction
+
+pred_cart_in <- predict(model_cart2, train2, type = "class")
+confusionMatrix(pred_cart_in, train2$loan_status, positive = "Fully Paid")
+
+# Out of sample prediction
+
+pred_out <- predict(model_cart2, newdata = test, type = "class")
+table(pred_out)
+
+confusionMatrix(pred_out, test$loan_status, positive = "Fully Paid")
+
+# Accuracy = 74%
+
+# FPR CART = 0.87
+
+```
+
+
+### Random Forest
+
+
+```{r, message = FALSE, warning = FALSE}
+# Random Forest
+
+model_rf <- randomForest(loan_status~., data = train2)
+summary(model_rf)
+importance(model_rf)
+
+# In sample prediction
+
+pred_rf_in <- predict(model_rf, train2, type = "response")
+
+pred_val_cart <- ifelse(pred_rf_in>0.5, 1,0)
+table(pred_val)
+
+confusionMatrix(pred_rf_in, train2$loan_status, positive = "Fully Paid")
+
+# Poor prediction from random forest
+
+
+```
